@@ -7,7 +7,7 @@ on:
         description: 'Task for CodeMie Code to run'
         required: true
         type: string
-        default: 'Review the changes in this commit and report any issues'
+        default: 'List all files in this repository and print them as a list'
 
 jobs:
   codemie:
