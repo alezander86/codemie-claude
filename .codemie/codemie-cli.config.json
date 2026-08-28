@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "activeProfile": "sso-autotest",
+  "profiles": {
+    "sso-autotest": {
+      "name": "sso-autotest",
+      "provider": "ai-run-sso",
+      "authMethod": "sso",
+      "codeMieUrl": "https://codemie.lab.epam.com",
+      "baseUrl": "https://codemie.lab.epam.com/code-assistant-api",
+      "model": "claude-sonnet-4-6"
+    }
+  }
+}

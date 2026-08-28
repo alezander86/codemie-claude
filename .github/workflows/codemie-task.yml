@@ -1,0 +1,72 @@
+name: CodeMie Code Task
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'Task for CodeMie Code to run'
+        required: true
+        type: string
+        default: 'Review the changes in this commit and report any issues'
+
+jobs:
+  codemie:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '24'
+
+      - name: Install CodeMie CLI
+        run: npm install -g @codemieai/code
+
+      - name: Install Claude Code
+        run: codemie install claude
+
+      - name: Obtain CodeMie JWT
+        id: auth
+        env:
+          CODEMIE_AUTH_URL: https://auth.codemie.lab.epam.com/realms/codemie-prod/protocol/openid-connect/token
+          CODEMIE_USERNAME: ${{ secrets.CODEMIE_USERNAME }}
+          CODEMIE_PASSWORD: ${{ secrets.CODEMIE_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${CODEMIE_USERNAME}" || -z "${CODEMIE_PASSWORD}" ]]; then
+            echo "❌ ERROR: CODEMIE_USERNAME / CODEMIE_PASSWORD secrets are not set"
+            exit 1
+          fi
+
+          TOKEN="$(curl -sf -X POST "${CODEMIE_AUTH_URL}" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "grant_type=password" \
+            -d "client_id=codemie-sdk" \
+            -d "username=${CODEMIE_USERNAME}" \
+            -d "password=${CODEMIE_PASSWORD}" | jq -r .access_token)"
+
+          if [[ -z "${TOKEN}" || "${TOKEN}" == "null" ]]; then
+            echo "❌ ERROR: failed to obtain a JWT from CodeMie auth"
+            exit 1
+          fi
+
+          # Mask the token so it never appears in logs, then pass it to later steps
+          echo "::add-mask::${TOKEN}"
+          echo "token=${TOKEN}" >> "${GITHUB_OUTPUT}"
+
+      - name: Run CodeMie Code Task
+        env:
+          CODEMIE_JWT_TOKEN: ${{ steps.auth.outputs.token }}
+          TASK: ${{ github.event.inputs.task }}
+        run: |
+          codemie-claude \
+            --jwt-token "${CODEMIE_JWT_TOKEN}" \
+            --base-url "https://codemie.lab.epam.com" \
+            --task "${TASK}" \
+            --silent
