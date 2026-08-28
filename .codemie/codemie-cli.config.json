@@ -8,7 +8,10 @@
       "authMethod": "sso",
       "codeMieUrl": "https://codemie.lab.epam.com",
       "baseUrl": "https://codemie.lab.epam.com/code-assistant-api",
-      "model": "claude-sonnet-4-6"
+      "apiKey": "sso-authenticated",
+      "model": "claude-sonnet-4-6",
+      "timeout": 300,
+      "debug": false
     }
   }
 }
