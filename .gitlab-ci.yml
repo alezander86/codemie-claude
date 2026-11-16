@@ -1,0 +1,112 @@
+# CodeMie merge request review for GitLab CI.
+#
+# Same approach as .github/workflows/codemie-task.yml: install the CodeMie CLI and the
+# Claude agent, get a JWT from CodeMie auth, run codemie-claude with a task. The review
+# logic lives in the task prompt below, not in code. The agent writes its review to
+# review.md, and the job posts that file as a note on the merge request.
+#
+# Required CI/CD variables (Settings > CI/CD > Variables, mark all as masked):
+#   CODEMIE_USERNAME     CodeMie service account
+#   CODEMIE_PASSWORD     its password
+#   GITLAB_REVIEW_TOKEN  project access token with the "api" scope (role Reporter or higher),
+#                        used to post the review note. CI_JOB_TOKEN cannot create notes.
+#   CODEMIE_BASE_URL     base URL of your CodeMie instance, for example https://codemie.example.com
+#   CODEMIE_KEYCLOAK_URL base URL of the Keycloak that issues CodeMie tokens, for example
+#                        https://keycloak.example.com. The job appends
+#                        /realms/codemie-prod/protocol/openid-connect/token to it.
+# Optional variables:
+#   REVIEW_FOCUS         extra instructions, for example "focus on security"
+
+stages:
+  - review
+
+codemie-review:
+  stage: review
+  image: node:24
+  allow_failure: true
+  timeout: 20 minutes
+  variables:
+    GIT_DEPTH: "0"
+    REVIEW_FOCUS: ""
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  before_script:
+    - npm install -g @codemieai/code
+    - codemie install claude
+  script:
+    - |
+      set -eu
+
+      for v in CODEMIE_USERNAME CODEMIE_PASSWORD GITLAB_REVIEW_TOKEN CODEMIE_BASE_URL CODEMIE_KEYCLOAK_URL; do
+        if [ -z "$(printenv "$v")" ]; then
+          echo "ERROR: CI/CD variable $v is not set"
+          exit 1
+        fi
+      done
+
+      # The runner checks out the merge request source branch. Fetch the target branch
+      # so the agent can diff against it.
+      git fetch --quiet origin "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}"
+
+      # Obtain a CodeMie JWT. It is kept in a shell variable only and never printed.
+      CODEMIE_AUTH_URL="${CODEMIE_KEYCLOAK_URL%/}/realms/codemie-prod/protocol/openid-connect/token"
+      CODEMIE_JWT_TOKEN="$(curl -sf -X POST "${CODEMIE_AUTH_URL}" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "grant_type=password" \
+        -d "client_id=codemie-sdk" \
+        --data-urlencode "username=${CODEMIE_USERNAME}" \
+        --data-urlencode "password=${CODEMIE_PASSWORD}" \
+        | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).access_token||"")}catch(e){}})')"
+
+      if [ -z "${CODEMIE_JWT_TOKEN}" ]; then
+        echo "ERROR: failed to obtain a JWT from CodeMie auth"
+        exit 1
+      fi
+
+      TASK="$(cat <<EOF
+      You are reviewing GitLab merge request !${CI_MERGE_REQUEST_IID} in this repository.
+      Title: ${CI_MERGE_REQUEST_TITLE}
+      Source branch: ${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME}
+      Target branch: ${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}
+
+      1. Get the changes with: git diff origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}...HEAD
+      2. For every changed file, read the surrounding code and the code that calls it in the
+         rest of the project before judging the change. Do not review the diff in isolation.
+      3. Look for correctness bugs, security problems, missing error handling, missing or
+         broken tests, and clear maintainability problems. Skip style nitpicks.
+      4. Write the review in Markdown to the file review.md in the current directory:
+         a short summary, then findings ordered by severity. For each finding give the file,
+         the line, what is wrong and a concrete fix. If you find nothing, say so in one line.
+      5. Do not modify any other file and do not run git commands that change the repository.
+      ${REVIEW_FOCUS}
+      EOF
+      )"
+
+      rm -f review.md
+      codemie-claude \
+        --jwt-token "${CODEMIE_JWT_TOKEN}" \
+        --base-url "${CODEMIE_BASE_URL}" \
+        --task "${TASK}" \
+        --silent
+
+      if [ ! -s review.md ]; then
+        echo "ERROR: the agent did not produce review.md"
+        exit 1
+      fi
+
+      # Post review.md as a note on the merge request. JSON is built with node so that
+      # quotes, newlines and backticks in the review are escaped correctly.
+      node -e 'const fs=require("fs");fs.writeFileSync("note.json",JSON.stringify({body:"## CodeMie review\n\n"+fs.readFileSync("review.md","utf8")+"\n\n<sub>[job log]("+process.env.CI_JOB_URL+")</sub>"}))'
+
+      curl -sf -X POST \
+        -H "PRIVATE-TOKEN: ${GITLAB_REVIEW_TOKEN}" \
+        -H "Content-Type: application/json" \
+        --data @note.json \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/notes" > /dev/null
+
+      echo "Posted review note to merge request !${CI_MERGE_REQUEST_IID}"
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths:
+      - review.md
