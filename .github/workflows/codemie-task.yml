@@ -33,7 +33,7 @@ jobs:
       - name: Obtain CodeMie JWT
         id: auth
         env:
-          CODEMIE_AUTH_URL: https://auth.codemie.lab.epam.com/realms/codemie-prod/protocol/openid-connect/token
+          CODEMIE_KEYCLOAK_URL: ${{ vars.CODEMIE_KEYCLOAK_URL }}
           CODEMIE_USERNAME: ${{ secrets.CODEMIE_USERNAME }}
           CODEMIE_PASSWORD: ${{ secrets.CODEMIE_PASSWORD }}
         run: |
@@ -43,6 +43,13 @@ jobs:
             echo "❌ ERROR: CODEMIE_USERNAME / CODEMIE_PASSWORD secrets are not set"
             exit 1
           fi
+
+          if [[ -z "${CODEMIE_KEYCLOAK_URL}" ]]; then
+            echo "❌ ERROR: CODEMIE_KEYCLOAK_URL repository variable is not set"
+            exit 1
+          fi
+
+          CODEMIE_AUTH_URL="${CODEMIE_KEYCLOAK_URL%/}/realms/codemie-prod/protocol/openid-connect/token"
 
           TOKEN="$(curl -sf -X POST "${CODEMIE_AUTH_URL}" \
             -H "Content-Type: application/x-www-form-urlencoded" \
@@ -63,10 +70,16 @@ jobs:
       - name: Run CodeMie Code Task
         env:
           CODEMIE_JWT_TOKEN: ${{ steps.auth.outputs.token }}
+          CODEMIE_BASE_URL: ${{ vars.CODEMIE_BASE_URL }}
           TASK: ${{ github.event.inputs.task }}
         run: |
+          if [[ -z "${CODEMIE_BASE_URL}" ]]; then
+            echo "❌ ERROR: CODEMIE_BASE_URL repository variable is not set"
+            exit 1
+          fi
+
           codemie-claude \
             --jwt-token "${CODEMIE_JWT_TOKEN}" \
-            --base-url "https://codemie.lab.epam.com" \
+            --base-url "${CODEMIE_BASE_URL}" \
             --task "${TASK}" \
             --silent
